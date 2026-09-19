@@ -9,3 +9,15 @@
 
 # Local logs
 *.log
+
+# Dependencies and build output
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+# Local runtime data and database backups
+/.local/
+/backups/
+/work/
