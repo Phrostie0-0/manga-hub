@@ -1,6 +1,6 @@
 # Архитектура Manga Hub MVP
 
-Статус: проект устройства, 20 сентября 2026 года. Сейчас в репозитории только документация.
+Статус: первый исполняемый MVP, 20 сентября 2026 года. Реализованы web/API, PostgreSQL schema, encrypted sessions, Graphile Worker и адаптеры ReManga/MangaLib.
 
 ## Границы системы
 
@@ -22,8 +22,8 @@ Manga Hub хранит профили своих пользователей, з�
 - **Better Auth** — email/password и серверные PostgreSQL-сессии. Для паролей настраивается Argon2id.
 - **Graphile Worker** — периодические и фоновые задания поверх той же PostgreSQL без Redis.
 - **Playwright + Chromium** — интерактивный вход на источники и browser-only адаптеры.
-- **libsodium / XChaCha20-Poly1305** — authenticated encryption сессионных пакетов.
-- **Node.js LTS + npm** — один runtime и lockfile для web, API и workers.
+- **Node.js AES-256-GCM** — authenticated envelope encryption сессионных пакетов без нативной зависимости.
+- **Node.js 24 + pnpm** — один runtime и lockfile для web, API и workers.
 
 Версии зависимостей фиксируются lockfile при создании каркаса, а не в документе.
 
@@ -70,8 +70,7 @@ flowchart LR
 Локально без Docker:
 
 ```text
-npm run dev          # Next.js + API
-npm run worker:dev   # scheduler, sync и auth browser worker
+pnpm dev             # Next.js + API + scheduler/sync/auth worker
 native PostgreSQL
 ```
 

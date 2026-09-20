@@ -1,6 +1,6 @@
 # Безопасность аккаунтов и внешних сессий
 
-Статус: проект для первого MVP, 20 сентября 2026 года.
+Статус: локальный MVP, 20 сентября 2026 года. Документ разделяет уже реализованные меры и целевую production-модель; пункты с пометкой «до публичного запуска» пока не являются свойствами приложения.
 
 Cookies и bearer tokens подключённых сайтов фактически дают доступ к чужому аккаунту. Для Manga Hub это самые чувствительные данные после ключа шифрования. Их защита проектируется до первого реального адаптера.
 
@@ -16,13 +16,13 @@ Cookies и bearer tokens подключённых сайтов фактичес�
 Better Auth хранит пользователей и серверные сессии в PostgreSQL. Настройки MVP:
 
 - email/password с кастомным Argon2id hasher;
-- параметры Argon2id калибруются на production-машине и не понижаются молча;
+- Argon2id использует зафиксированные параметры (`64 MiB`, `t=3`, `p=4`); перед production их нужно откалибровать на целевой машине;
 - host-only cookie с `Secure`, `HttpOnly`, `SameSite=Lax` в production;
 - точный `baseURL` и allowlist trusted origins;
 - database session без долгоживущего JWT в localStorage;
-- rate limit для sign-up, sign-in, reset и source connect;
 - отзыв остальных сессий после смены/сброса пароля;
-- email verification и reset flow обязательны до открытия регистрации наружу.
+
+До публичного запуска добавляются rate limit для sign-up/sign-in/reset/source connect, подтверждение email и рабочий reset flow с почтовым transport.
 
 В UI не показываются причины, по которым можно определить существование чужого email.
 
@@ -36,7 +36,7 @@ Better Auth хранит пользователей и серверные сес
 
 Логин и пароль источника не сохраняются. В основном сценарии они вводятся внутри временного Chromium context. Auth worker не включает tracing, video, HAR и запись console/network bodies. После успешной проверки извлекается минимальный session bundle, браузерный профиль уничтожается, а временное хранилище располагается в `tmpfs` в production.
 
-Remote browser gateway:
+Целевой remote browser gateway для серверного запуска (в локальном MVP вместо него открывается отдельное окно Chromium):
 
 - выдаёт одноразовый подписанный URL с TTL 10–15 минут;
 - связывает попытку с текущим `user_id` и `connection_id`;
@@ -57,25 +57,25 @@ Remote browser gateway:
   "formatVersion": 1,
   "cookies": [],
   "origins": [],
-  "sessionStorage": [],
+  "accessToken": "...",
   "userAgent": "...",
   "createdAt": "...",
   "knownExpiresAt": "..."
 }
 ```
 
-Сохраняются только origins из allowlist адаптера. Не относящиеся к авторизации localStorage/IndexedDB/sessionStorage значения отбрасываются; sessionStorage адаптер извлекает явно только там, где он действительно нужен. Session bundle не пишется в debug output, fixtures, traces или файловый кэш.
+Локальный MVP сохраняет allowlisted cookies и отдельно найденный bearer token. `localStorage`, IndexedDB и sessionStorage в bundle не копируются; поле `origins` остаётся пустым. Session bundle не пишется в debug output, fixtures, traces или файловый кэш.
 
 ## Envelope encryption
 
 Для каждого `source_connection` генерируется отдельный случайный 256-bit data encryption key (DEK).
 
-1. Session bundle шифруется DEK через XChaCha20-Poly1305.
+1. Session bundle шифруется DEK через AES-256-GCM.
 2. DEK заворачивается key encryption key (KEK) тем же AEAD.
 3. PostgreSQL получает ciphertext, два уникальных nonce, wrapped DEK, версии формата/KEK и timestamps.
 4. Associated data связывает ciphertext с `user_id`, `source_connection_id`, `source code` и версией формата.
 
-Новый 24-byte nonce создаётся CSPRNG для каждой операции. Криптографические примитивы предоставляет libsodium; собственная реализация алгоритма не пишется.
+Новый 12-byte nonce создаётся CSPRNG для каждой операции. Криптографические примитивы предоставляет `node:crypto`; authentication tag хранится вместе с ciphertext. Собственная реализация AES не пишется.
 
 Пример полей `source_secrets`:
 
@@ -104,11 +104,11 @@ KEK не хранится:
 - в Docker image/Compose YAML;
 - в job payload или логах.
 
-Локально `MANGA_HUB_KEK_FILE` указывает на файл вне репозитория с правами только владельца. На Ubuntu исходный файл принадлежит root, имеет режим `0400`, а в контейнер монтируется read-only и доступен только UID worker-процесса через Docker secret. Compose secret упрощает доставку файла, но не считается самостоятельным vault.
+Локально `MANGA_HUB_KEK_FILE` указывает на исключённый из git файл `.local/secrets/credential-kek-v1` с режимом `0600`; каталоги `.local` и `secrets` имеют режим `0700`. В целевой Ubuntu-конфигурации исходный файл принадлежит root, имеет режим `0400`, а в контейнер монтируется read-only и доступен только UID worker-процесса через Docker secret. Compose secret упрощает доставку файла, но не считается самостоятельным vault.
 
 Резервная копия KEK хранится отдельно от дампов PostgreSQL. Потеря всех копий KEK означает намеренную невозможность восстановить внешние сессии; библиотека останется, но аккаунты придётся подключать заново.
 
-Только роли `sync_worker` и `auth_worker` могут читать `source_secrets`. Роль `web_api` видит метаданные подключения, но не ciphertext и не получает KEK.
+Локальный MVP использует одну роль PostgreSQL. До публичного запуска роли разделяются: только `sync_worker` и `auth_worker` смогут читать `source_secrets`, а `web_api` будет видеть метаданные подключения без ciphertext и KEK.
 
 ## Ротация
 
@@ -135,7 +135,7 @@ interface KeyWrapper {
 
 ## Логи, ошибки и диагностика
 
-Глобальный redaction удаляет значения заголовков и полей:
+Код MVP не логирует session bundle и полные request/response bodies внешних сайтов. До публичного запуска добавляется глобальный redaction значений заголовков и полей:
 
 ```text
 Cookie
@@ -150,17 +150,13 @@ storageState
 
 Не логируются полные request/response bodies внешних сайтов. Для диагностики parser-а разрешены только allowlisted структурные поля, размер ответа, content type и hash обезличенного fixture. Ошибка пользователю содержит код и безопасное описание; сырые HTML/JSON отсутствуют.
 
-Audit log фиксирует вход в Manga Hub, создание/удаление подключения, повторную авторизацию, расшифрование для sync, ротацию ключей и административные действия. Он не содержит сам секрет.
+До публичного запуска audit log должен фиксировать вход в Manga Hub, создание/удаление подключения, повторную авторизацию, расшифрование для sync, ротацию ключей и административные действия. Сам секрет в события не входит.
 
 ## Сетевая изоляция
 
-- PostgreSQL и workers не публикуют порты наружу.
-- Наружу открыт только reverse proxy на 80/443; HTTP перенаправляется на HTTPS.
-- Адаптер определяет точный allowlist origins; пользователь не передаёт URL для server-side fetch.
-- Redirect на другой host удаляет cookies/Authorization и обычно завершает запрос.
-- Запрещены loopback, private, link-local, metadata IP и неожиданные DNS rebinding результаты.
-- Ответы имеют timeout и максимальный размер; parser не исполняет полученный HTML/JS вне изолированного Chromium.
-- Browser worker и обычный sync worker работают без root, Docker socket и лишних Linux capabilities.
+Сейчас адаптер определяет точный allowlist origins, пользователь не передаёт URL для server-side fetch, redirect запрещён, а JSON-ответ ограничен двумя мегабайтами. До публичного запуска добавляются отдельный request timeout и проверка результатов DNS.
+
+В целевой Ubuntu-среде PostgreSQL и workers не публикуют порты наружу, reverse proxy принимает 80/443 с перенаправлением на HTTPS, а browser/sync workers работают без root, Docker socket и лишних Linux capabilities.
 
 ## Контроль доступа к данным
 
@@ -168,7 +164,7 @@ Audit log фиксирует вход в Manga Hub, создание/удале�
 
 Для production рассматривается PostgreSQL RLS как второй рубеж. Даже с RLS проверка авторизации в приложении остаётся обязательной.
 
-## Удаление подключения и аккаунта
+## Удаление подключения и аккаунта — до публичного запуска
 
 При удалении подключения:
 
@@ -180,7 +176,7 @@ Audit log фиксирует вход в Manga Hub, создание/удале�
 
 Удаление профиля запускает тот же процесс для всех подключений, затем удаляет пользовательские данные по документированной retention policy.
 
-## Резервные копии
+## Резервные копии — до публичного запуска
 
 - дампы PostgreSQL шифруются;
 - KEK backup хранится отдельно;

@@ -1,0 +1,54 @@
+{
+  "name": "manga-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently --kill-others --names web,worker --prefix-colors blue,magenta \"pnpm dev:web\" \"pnpm dev:worker\"",
+    "dev:web": "next dev",
+    "dev:worker": "tsx watch workers/main.ts",
+    "build": "next build",
+    "postbuild": "node scripts/prepare-standalone.mjs",
+    "start": "node --env-file-if-exists=.env .next/standalone/server.js",
+    "worker": "tsx workers/main.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "browser:install": "playwright install chromium",
+    "local:init": "tsx scripts/init-local.ts"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "1.7.5",
+    "@node-rs/argon2": "2.2.1",
+    "better-auth": "1.7.5",
+    "dotenv": "18.0.1",
+    "drizzle-orm": "0.45.2",
+    "graphile-worker": "0.18.0",
+    "next": "16.3.5",
+    "pg": "8.23.0",
+    "playwright": "1.63.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "@types/pg": "8.23.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "concurrently": "10.0.5",
+    "drizzle-kit": "0.31.10",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.5",
+    "tsx": "4.23.13",
+    "typescript": "6.0.3",
+    "vitest": "5.0.1"
+  }
+}
