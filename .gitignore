@@ -15,6 +15,7 @@ node_modules/
 .next/
 out/
 coverage/
+next-env.d.ts
 *.tsbuildinfo
 
 # Local runtime data and database backups
