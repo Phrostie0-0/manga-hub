@@ -1,17 +1,10 @@
 import type { Task } from "graphile-worker";
 
-import {
-  ProviderAuthError,
-  ProviderChallengeError,
-  ProviderRateLimitError,
-} from "../../packages/connectors/src";
 import { DrizzleSyncRepository } from "../../src/server/repositories/sync-repository";
+import { updateConnectionStatus } from "../../src/server/services/connections";
 import { loadConnectionForSync } from "../../src/server/services/source-sessions";
 import { runConnectionSync } from "../../src/server/sync";
-
-const HOUR_MS = 60 * 60 * 1_000;
-const MINIMUM_RETRY_MS = 15 * 60 * 1_000;
-const MAXIMUM_RETRY_MS = 24 * HOUR_MS;
+import { HOURLY_SYNC_MS, syncFailureDisposition } from "./sync-policy";
 
 function connectionIdFromPayload(payload: unknown): string {
   if (
@@ -38,20 +31,13 @@ export const syncSourceTask: Task = async (payload, helpers) => {
       repository: new DrizzleSyncRepository(),
       requestContext: { signal: helpers.abortSignal },
     });
-    nextRunAt = new Date(Date.now() + HOUR_MS);
+    nextRunAt = new Date(Date.now() + HOURLY_SYNC_MS);
   } catch (error) {
-    if (error instanceof ProviderAuthError || error instanceof ProviderChallengeError) {
-      return;
-    }
+    const disposition = syncFailureDisposition(error);
+    await updateConnectionStatus(connectionId, disposition.status);
+    if (disposition.retryDelayMs === undefined) return;
 
-    const delay =
-      error instanceof ProviderRateLimitError
-        ? Math.min(
-            MAXIMUM_RETRY_MS,
-            Math.max(MINIMUM_RETRY_MS, error.retryAfterMs ?? MINIMUM_RETRY_MS),
-          )
-        : HOUR_MS;
-    nextRunAt = new Date(Date.now() + delay);
+    nextRunAt = new Date(Date.now() + disposition.retryDelayMs);
     helpers.logger.warn("Source sync failed; a later attempt was scheduled", {
       connectionId,
       error: error instanceof Error ? error.message : "Unknown synchronization error",

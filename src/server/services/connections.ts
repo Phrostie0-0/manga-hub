@@ -2,6 +2,7 @@ import { and, asc, countDistinct, eq, ilike, ne } from "drizzle-orm";
 
 import type { ProviderCode } from "../../../packages/connectors/src";
 import { db, schema } from "@/server/db";
+import { planConnectionAction } from "@/server/services/connection-actions";
 
 const ENABLED_PROVIDERS = new Set<ProviderCode>(["remanga", "mangalib"]);
 
@@ -90,8 +91,16 @@ export async function createOrRestartConnection(userId: string, sourceCodeValue:
   if (!source) throw new Error("Source is not available");
 
   const [existing] = await db
-    .select({ id: schema.sourceConnections.id, status: schema.sourceConnections.status })
+    .select({
+      id: schema.sourceConnections.id,
+      status: schema.sourceConnections.status,
+      secretConnectionId: schema.sourceSecrets.sourceConnectionId,
+    })
     .from(schema.sourceConnections)
+    .leftJoin(
+      schema.sourceSecrets,
+      eq(schema.sourceSecrets.sourceConnectionId, schema.sourceConnections.id),
+    )
     .where(
       and(
         eq(schema.sourceConnections.userId, userId),
@@ -103,10 +112,11 @@ export async function createOrRestartConnection(userId: string, sourceCodeValue:
     .limit(1);
 
   if (existing) {
-    if (existing.status !== "active") {
+    const plan = planConnectionAction(existing.status, Boolean(existing.secretConnectionId));
+    if (plan.status !== existing.status) {
       await db
         .update(schema.sourceConnections)
-        .set({ status: "pending_auth" })
+        .set({ status: plan.status })
         .where(
           and(
             eq(schema.sourceConnections.id, existing.id),
@@ -117,7 +127,7 @@ export async function createOrRestartConnection(userId: string, sourceCodeValue:
     return {
       id: existing.id,
       sourceCode: code,
-      status: existing.status === "active" ? "active" : "pending_auth",
+      ...plan,
     };
   }
 
@@ -126,7 +136,7 @@ export async function createOrRestartConnection(userId: string, sourceCodeValue:
     .values({ userId, sourceId: source.id, status: "pending_auth" })
     .returning({ id: schema.sourceConnections.id, status: schema.sourceConnections.status });
   if (!connection) throw new Error("Unable to create source connection");
-  return { ...connection, sourceCode: code };
+  return { ...connection, sourceCode: code, nextAction: "authorize" as const };
 }
 
 export async function getConnectionTarget(connectionId: string) {

@@ -34,27 +34,41 @@ describe("ReMangaAdapter", () => {
   });
 
   it("maps only personal bookmarks and preserves progress semantics", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({
-        next: null,
-        results: [
-          {
-            chapter_date: "2026-09-19T09:00:00Z",
-            read_progress: 17,
-            read_progress_total: 35,
-            title: {
-              id: 7,
-              dir: "7-example",
-              rus_name: "Пример",
-              name: "Example",
-              count_chapters: 35,
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          next: null,
+          results: [
+            { id: 9001, type: 1 },
+            { id: 9002, type: 3 },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          next: 2,
+          results: [
+            {
+              bookmark_type_id: 9001,
+              type: 9001,
+              read_progress: 17,
+              read_progress_total: 35,
+              title: {
+                id: 7,
+                dir: "7-example",
+                main_name: "Пример",
+                secondary_name: "Example",
+                another_name: "Sample",
+                count_chapters: 35,
+              },
             },
-          },
-        ],
-      }),
-    );
+          ],
+        }),
+      );
 
-    const page = await new ReMangaAdapter().listLibrary(
+    const adapter = new ReMangaAdapter();
+    const page = await adapter.listLibrary(
       session,
       { externalId: "42", displayName: "reader" },
       undefined,
@@ -66,7 +80,7 @@ describe("ReMangaAdapter", () => {
       externalId: "7",
       sourceUrl: "https://remanga.org/manga/7-example",
       title: "Пример",
-      aliases: ["Example"],
+      aliases: ["Example", "Sample"],
       remoteStatus: "reading",
       progress: {
         kind: "last-read",
@@ -75,6 +89,49 @@ describe("ReMangaAdapter", () => {
       },
     });
     expect(page.nextCursor).toBeTypeOf("string");
+
+    const folderUrl = new URL(fetchMock.mock.calls[0]?.[0] as URL);
+    const libraryUrl = new URL(fetchMock.mock.calls[1]?.[0] as URL);
+    expect(folderUrl.pathname).toBe("/api/v2/users/42/user_bookmarks/");
+    expect(libraryUrl.pathname).toBe("/api/v2/users/42/bookmarks/");
+    expect(libraryUrl.searchParams.get("type")).toBeNull();
+    expect(libraryUrl.searchParams.get("page")).toBe("1");
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        next: null,
+        results: [
+          {
+            bookmark_type_id: 9002,
+            type: 9002,
+            read_progress: 35,
+            read_progress_total: 35,
+            title: {
+              id: 8,
+              dir: "8-finished",
+              main_name: "Завершённый пример",
+              count_chapters: 35,
+            },
+          },
+        ],
+      }),
+    );
+
+    const secondPage = await adapter.listLibrary(
+      session,
+      { externalId: "42", displayName: "reader" },
+      page.nextCursor,
+      { fetch: fetchMock, now: () => new Date("2026-09-20T10:00:00.000Z") },
+    );
+
+    expect(secondPage.items[0]).toMatchObject({
+      externalId: "8",
+      remoteStatus: "completed",
+    });
+    expect(secondPage.nextCursor).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const secondLibraryUrl = new URL(fetchMock.mock.calls[2]?.[0] as URL);
+    expect(secondLibraryUrl.searchParams.get("page")).toBe("2");
   });
 
   it("turns a 401 into a reauthentication state", async () => {

@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 
 import { getApiSession } from "@/server/auth/session";
-import { enqueueConnectionAuthorization } from "@/server/queue";
+import {
+  enqueueConnectionAuthorization,
+  enqueueConnectionSync,
+} from "@/server/queue";
 import {
   createOrRestartConnection,
   listConnections,
+  updateConnectionStatus,
 } from "@/server/services/connections";
 
 export const dynamic = "force-dynamic";
@@ -45,10 +49,23 @@ export async function POST(request: Request) {
 
   try {
     const connection = await createOrRestartConnection(session.user.id, sourceCode);
-    if (connection.status !== "active") {
-      await enqueueConnectionAuthorization(connection.id);
+    try {
+      if (connection.nextAction === "authorize") {
+        await enqueueConnectionAuthorization(connection.id);
+      } else if (connection.nextAction === "sync") {
+        await enqueueConnectionSync(connection.id);
+      }
+    } catch (error) {
+      await updateConnectionStatus(
+        connection.id,
+        connection.nextAction === "authorize" ? "needs_attention" : "degraded",
+      );
+      throw error;
     }
-    return NextResponse.json({ connection }, { status: connection.status === "active" ? 200 : 202 });
+    return NextResponse.json(
+      { connection },
+      { status: connection.nextAction === "none" ? 200 : 202 },
+    );
   } catch {
     return NextResponse.json(
       { error: { code: "connection_start_failed", message: "Не удалось запустить подключение." } },

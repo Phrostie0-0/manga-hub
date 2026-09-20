@@ -12,6 +12,7 @@ import {
   LocalReMangaAuthBrowser,
   type AuthBrowserTransport,
 } from "../auth-browser";
+import { HOURLY_SYNC_MS, syncFailureDisposition } from "./sync-policy";
 
 function connectionIdFromPayload(payload: unknown): string {
   if (
@@ -57,25 +58,62 @@ export const authorizeSourceTask: Task = async (payload, helpers) => {
     throw new Error("Captured session belongs to a different source adapter");
   }
 
-  await storeProviderSession({
-    connectionId,
-    userId: target.userId,
-    sourceCode: target.sourceCode,
-    session: captured.session,
-    profile: captured.profile,
-  });
-
-  await runConnectionSync({
-    connection: {
-      id: connectionId,
+  try {
+    await storeProviderSession({
+      connectionId,
       userId: target.userId,
-      provider: target.sourceCode,
+      sourceCode: target.sourceCode,
       session: captured.session,
-      remoteProfile: captured.profile,
-    },
-    mode: "initial",
-    repository: new DrizzleSyncRepository(),
-  });
+      profile: captured.profile,
+    });
+  } catch (error) {
+    await updateConnectionStatus(connectionId, "needs_attention");
+    helpers.logger.error("Captured source session could not be stored", {
+      connectionId,
+      error: error instanceof Error ? error.message : "Unknown session storage error",
+    });
+    return;
+  }
+
+  try {
+    await runConnectionSync({
+      connection: {
+        id: connectionId,
+        userId: target.userId,
+        provider: target.sourceCode,
+        session: captured.session,
+        remoteProfile: captured.profile,
+      },
+      mode: "initial",
+      repository: new DrizzleSyncRepository(),
+    });
+  } catch (error) {
+    const disposition = syncFailureDisposition(error);
+    await updateConnectionStatus(connectionId, disposition.status);
+
+    if (disposition.retryDelayMs !== undefined) {
+      await helpers.addJob(
+        "sync_source",
+        { connectionId },
+        {
+          jobKey: `sync_source:${connectionId}`,
+          jobKeyMode: "replace",
+          maxAttempts: 1,
+          runAt: new Date(Date.now() + disposition.retryDelayMs),
+        },
+      );
+      helpers.logger.warn("Initial source import failed; a later attempt was scheduled", {
+        connectionId,
+        error: error instanceof Error ? error.message : "Unknown synchronization error",
+      });
+    } else {
+      helpers.logger.warn("Initial source import requires renewed user attention", {
+        connectionId,
+        error: error instanceof Error ? error.message : "Unknown synchronization error",
+      });
+    }
+    return;
+  }
 
   await helpers.addJob(
     "sync_source",
@@ -84,7 +122,7 @@ export const authorizeSourceTask: Task = async (payload, helpers) => {
       jobKey: `sync_source:${connectionId}`,
       jobKeyMode: "replace",
       maxAttempts: 1,
-      runAt: new Date(Date.now() + 60 * 60 * 1_000),
+      runAt: new Date(Date.now() + HOURLY_SYNC_MS),
     },
   );
 };

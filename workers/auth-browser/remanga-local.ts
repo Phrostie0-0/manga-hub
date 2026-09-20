@@ -1,4 +1,8 @@
-import { chromium, type BrowserContext, type Request } from "playwright";
+import {
+  chromium,
+  type BrowserContext,
+  type Request,
+} from "playwright";
 
 import { ReMangaAdapter, type ProviderSession } from "../../packages/connectors/src";
 import type {
@@ -6,6 +10,7 @@ import type {
   AuthBrowserTransport,
   CapturedProviderSession,
 } from "./types";
+import { watchAuthorizationWindow } from "./window-lifecycle";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1_000;
 
@@ -39,6 +44,9 @@ function waitForToken(
     let finished = false;
     const startedAt = Date.now();
     const timers: { interval?: NodeJS.Timeout; timeout?: NodeJS.Timeout } = {};
+    const stopWatchingWindow = watchAuthorizationWindow(context, () =>
+      finish({ error: new Error("ReManga authorization window was closed") }),
+    );
 
     const finish = (result: { token?: string; error?: Error }) => {
       if (finished) return;
@@ -46,6 +54,7 @@ function waitForToken(
       clearInterval(timers.interval);
       clearTimeout(timers.timeout);
       context.off("request", onRequest);
+      stopWatchingWindow();
       signal?.removeEventListener("abort", onAbort);
       if (result.error) reject(result.error);
       else resolve(result.token as string);

@@ -13,17 +13,18 @@ import type {
 } from "../types";
 
 const API_ORIGIN = "https://api.remanga.org";
-const BOOKMARK_TYPES = [0, 1, 2, 3, 4, 5] as const;
 const STATUS_NAMES: Record<number, string> = {
-  0: "reading",
-  1: "planned",
-  2: "completed",
-  3: "dropped",
-  4: "on_hold",
-  5: "not_interested",
+  1: "reading",
+  2: "planned",
+  3: "completed",
+  4: "dropped",
+  5: "on_hold",
+  6: "not_interested",
+  7: "favorite",
+  8: "custom",
 };
 
-type Cursor = { typeIndex: number; page: number };
+type Cursor = { page: number; statusByBookmarkId?: Record<string, string> };
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -52,19 +53,28 @@ function unwrapRecord(value: unknown): JsonRecord {
 }
 
 function decodeCursor(value: string | undefined): Cursor {
-  if (!value) return { typeIndex: 0, page: 1 };
+  if (!value) return { page: 1 };
 
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as unknown;
-    if (
-      isRecord(parsed) &&
-      Number.isInteger(parsed.typeIndex) &&
-      Number.isInteger(parsed.page) &&
-      (parsed.typeIndex as number) >= 0 &&
-      (parsed.typeIndex as number) < BOOKMARK_TYPES.length &&
-      (parsed.page as number) >= 1
-    ) {
-      return { typeIndex: parsed.typeIndex as number, page: parsed.page as number };
+    if (isRecord(parsed) && Number.isInteger(parsed.page) && (parsed.page as number) >= 1) {
+      const statusByBookmarkId: Record<string, string> = {};
+      if (isRecord(parsed.statusByBookmarkId)) {
+        for (const [id, status] of Object.entries(parsed.statusByBookmarkId)) {
+          if (id && typeof status === "string" && status) statusByBookmarkId[id] = status;
+        }
+      }
+
+      // Cursors produced before ReManga's bookmark API change traversed six
+      // hard-coded `type` values. Those values are now per-account folder ids,
+      // so resuming such a cursor would skip data. Restart safely instead.
+      if ("typeIndex" in parsed) return { page: 1 };
+
+      return {
+        page: parsed.page as number,
+        statusByBookmarkId:
+          Object.keys(statusByBookmarkId).length > 0 ? statusByBookmarkId : undefined,
+      };
     }
   } catch {
     // Fall through to the safe error below.
@@ -77,7 +87,26 @@ function encodeCursor(cursor: Cursor): string {
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
-function responseItems(payload: unknown): { items: unknown[]; hasNext: boolean } {
+function nextPage(value: unknown, currentPage: number): number | undefined {
+  if (value === null || value === undefined || value === false || value === "") return undefined;
+
+  const numeric = numberValue(value);
+  if (numeric !== undefined && Number.isInteger(numeric) && numeric >= 1) return numeric;
+
+  if (typeof value === "string") {
+    try {
+      const page = numberValue(new URL(value, API_ORIGIN).searchParams.get("page"));
+      if (page !== undefined && Number.isInteger(page) && page >= 1) return page;
+    } catch {
+      // Fall through to the invalid response below.
+    }
+  }
+
+  if (value === true) return currentPage + 1;
+  throw new ProviderResponseError("ReManga returned an invalid pagination marker");
+}
+
+function responseItems(payload: unknown, currentPage: number): { items: unknown[]; nextPage?: number } {
   if (!isRecord(payload)) throw new ProviderResponseError("ReManga returned an invalid bookmark page");
   const page = isRecord(payload.content) ? payload.content : payload;
   const items = Array.isArray(page.results)
@@ -85,7 +114,7 @@ function responseItems(payload: unknown): { items: unknown[]; hasNext: boolean }
     : Array.isArray(page.content)
       ? page.content
       : [];
-  return { items, hasNext: Boolean(page.next) };
+  return { items, nextPage: nextPage(page.next, currentPage) };
 }
 
 function stableFingerprint(value: unknown): string {
@@ -123,7 +152,11 @@ function progressFromBookmark(bookmark: JsonRecord, status: string, observedAt: 
   return { kind: "status-only", completed: status === "completed", observedAt };
 }
 
-function mapBookmark(value: unknown, type: number, observedAt: string): RemoteLibraryEntry {
+function mapBookmark(
+  value: unknown,
+  statusByBookmarkId: Readonly<Record<string, string>>,
+  observedAt: string,
+): RemoteLibraryEntry {
   if (!isRecord(value) || !isRecord(value.title)) {
     throw new ProviderResponseError("ReManga bookmark has no title object");
   }
@@ -132,7 +165,9 @@ function mapBookmark(value: unknown, type: number, observedAt: string): RemoteLi
   const externalId = stringValue(title.id);
   const slug = stringValue(title.dir) ?? stringValue(title.slug);
   const displayTitle =
+    stringValue(title.main_name) ??
     stringValue(title.rus_name) ??
+    stringValue(title.secondary_name) ??
     stringValue(title.name) ??
     stringValue(title.en_name) ??
     stringValue(title.eng_name);
@@ -141,10 +176,21 @@ function mapBookmark(value: unknown, type: number, observedAt: string): RemoteLi
     throw new ProviderResponseError("ReManga bookmark is missing a stable id, slug, or title");
   }
 
-  const aliases = [title.name, title.rus_name, title.en_name, title.eng_name]
+  const aliases = [
+    title.main_name,
+    title.secondary_name,
+    title.another_name,
+    title.name,
+    title.rus_name,
+    title.en_name,
+    title.eng_name,
+  ]
     .map(stringValue)
     .filter((item): item is string => Boolean(item) && item !== displayTitle);
-  const remoteStatus = STATUS_NAMES[type] ?? `unknown:${type}`;
+  const bookmarkTypeId = stringValue(value.bookmark_type_id) ?? stringValue(value.type);
+  const remoteStatus = bookmarkTypeId
+    ? statusByBookmarkId[bookmarkTypeId] ?? `unknown:${bookmarkTypeId}`
+    : "unknown";
 
   return {
     externalId,
@@ -156,6 +202,42 @@ function mapBookmark(value: unknown, type: number, observedAt: string): RemoteLi
     progress: progressFromBookmark(value, remoteStatus, observedAt),
     fingerprint: stableFingerprint(value),
   };
+}
+
+async function bookmarkStatuses(
+  session: ProviderSession,
+  profile: RemoteProfile,
+  context: ProviderRequestContext,
+): Promise<Record<string, string>> {
+  const statuses: Record<string, string> = {};
+  let pageNumber = 1;
+  let pageCount = 0;
+
+  do {
+    if (pageCount >= 100) {
+      throw new ProviderResponseError("ReManga bookmark-folder pagination did not terminate");
+    }
+
+    const url = new URL(
+      `/api/v2/users/${encodeURIComponent(profile.externalId)}/user_bookmarks/`,
+      API_ORIGIN,
+    );
+    if (pageNumber > 1) url.searchParams.set("page", String(pageNumber));
+
+    const payload = await fetchProviderJson(url, session, [API_ORIGIN], context);
+    const folderPage = responseItems(payload, pageNumber);
+    for (const value of folderPage.items) {
+      if (!isRecord(value)) continue;
+      const id = stringValue(value.id);
+      const type = numberValue(value.type);
+      if (id && type !== undefined) statuses[id] = STATUS_NAMES[type] ?? `unknown:${type}`;
+    }
+
+    pageCount += 1;
+    pageNumber = folderPage.nextPage ?? 0;
+  } while (pageNumber > 0);
+
+  return statuses;
 }
 
 export class ReMangaAdapter implements ProviderAdapter {
@@ -202,26 +284,21 @@ export class ReMangaAdapter implements ProviderAdapter {
     context: ProviderRequestContext,
   ): Promise<Page<RemoteLibraryEntry>> {
     const cursor = decodeCursor(cursorValue);
-    const bookmarkType = BOOKMARK_TYPES[cursor.typeIndex];
     const url = new URL(`/api/v2/users/${encodeURIComponent(profile.externalId)}/bookmarks/`, API_ORIGIN);
     url.searchParams.set("page", String(cursor.page));
-    url.searchParams.set("type", String(bookmarkType));
     url.searchParams.set("ordering", "-chapter_date");
 
+    const statusByBookmarkId =
+      cursor.statusByBookmarkId ?? (await bookmarkStatuses(session, profile, context));
     const payload = await fetchProviderJson(url, session, this.allowedOrigins, context);
-    const { items, hasNext } = responseItems(payload);
+    const { items, nextPage: followingPage } = responseItems(payload, cursor.page);
     const observedAt = (context.now?.() ?? new Date()).toISOString();
 
-    let nextCursor: string | undefined;
-    if (hasNext) {
-      nextCursor = encodeCursor({ typeIndex: cursor.typeIndex, page: cursor.page + 1 });
-    } else if (cursor.typeIndex + 1 < BOOKMARK_TYPES.length) {
-      nextCursor = encodeCursor({ typeIndex: cursor.typeIndex + 1, page: 1 });
-    }
-
     return {
-      items: items.map((item) => mapBookmark(item, bookmarkType, observedAt)),
-      nextCursor,
+      items: items.map((item) => mapBookmark(item, statusByBookmarkId, observedAt)),
+      nextCursor: followingPage
+        ? encodeCursor({ page: followingPage, statusByBookmarkId })
+        : undefined,
     };
   }
 }

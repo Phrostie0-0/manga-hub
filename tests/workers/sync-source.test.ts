@@ -5,6 +5,7 @@ import { ProviderAuthError, ProviderRateLimitError } from "../../packages/connec
 const mocks = vi.hoisted(() => ({
   loadConnectionForSync: vi.fn(),
   runConnectionSync: vi.fn(),
+  updateConnectionStatus: vi.fn(),
 }));
 
 vi.mock("../../src/server/services/source-sessions", () => ({
@@ -12,6 +13,9 @@ vi.mock("../../src/server/services/source-sessions", () => ({
 }));
 vi.mock("../../src/server/sync", () => ({
   runConnectionSync: mocks.runConnectionSync,
+}));
+vi.mock("../../src/server/services/connections", () => ({
+  updateConnectionStatus: mocks.updateConnectionStatus,
 }));
 vi.mock("../../src/server/repositories/sync-repository", () => ({
   DrizzleSyncRepository: class DrizzleSyncRepository {},
@@ -33,6 +37,7 @@ describe("syncSourceTask scheduling", () => {
     vi.setSystemTime(new Date("2026-09-20T10:00:00.000Z"));
     mocks.loadConnectionForSync.mockReset().mockResolvedValue({ id: "connection-1" });
     mocks.runConnectionSync.mockReset().mockResolvedValue(undefined);
+    mocks.updateConnectionStatus.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -70,6 +75,7 @@ describe("syncSourceTask scheduling", () => {
 
     expect(taskHelpers.addJob).toHaveBeenCalledOnce();
     expect(taskHelpers.logger.warn).toHaveBeenCalledOnce();
+    expect(mocks.updateConnectionStatus).toHaveBeenCalledWith("connection-1", "degraded");
   });
 
   it("honors provider retry-after and stops when reauthorization is required", async () => {
@@ -86,6 +92,7 @@ describe("syncSourceTask scheduling", () => {
       { connectionId: "connection-1" },
       expect.objectContaining({ runAt: new Date("2026-09-20T12:00:00.000Z") }),
     );
+    expect(mocks.updateConnectionStatus).toHaveBeenCalledWith("connection-1", "rate_limited");
 
     const authHelpers = helpers();
     mocks.runConnectionSync.mockRejectedValueOnce(new ProviderAuthError());

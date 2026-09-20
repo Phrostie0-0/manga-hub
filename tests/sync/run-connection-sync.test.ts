@@ -51,8 +51,8 @@ describe("runConnectionSync", () => {
       },
     });
 
-    // ReManga has six bookmark categories, even when every page is empty.
-    expect(fetchMock).toHaveBeenCalledTimes(7);
+    // Profile, bookmark-folder map, then the unified personal bookmark page.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(result).toMatchObject({ runId: "run-1", importedItems: 0 });
     expect(repo.completeRun).toHaveBeenCalledWith({
       runId: "run-1",

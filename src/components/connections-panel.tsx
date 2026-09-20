@@ -92,7 +92,7 @@ export function ConnectionsPanel() {
       awaiting_user: "Ждёт входа",
       validating: "Проверка сессии",
       importing: "Импорт библиотеки",
-      active: "Синхронизируется",
+      active: "Подключено",
       reauth_required: "Нужен повторный вход",
       needs_attention: "Нужно внимание",
       rate_limited: "Пауза по лимиту",
@@ -166,10 +166,26 @@ export function ConnectionsPanel() {
               (connection) => connection.sourceCode === source.code,
             );
             const active = connection?.status === "active";
-            const pending = connection
-              ? ["pending_auth", "awaiting_user", "validating", "importing"].includes(connection.status)
+            const processing = connection
+              ? [
+                  "pending_auth",
+                  "awaiting_user",
+                  "validating",
+                  "importing",
+                  "rate_limited",
+                ].includes(connection.status)
               : false;
-            const busy = connecting === source.code || pending;
+            const launching = connecting === source.code;
+            let actionLabel = source.connectionEnabled ? "Подключить" : "Скоро";
+            if (active) actionLabel = "Подключено";
+            else if (launching) actionLabel = "Запускаю…";
+            else if (connection?.status === "pending_auth") actionLabel = "В очереди…";
+            else if (connection?.status === "awaiting_user") actionLabel = "Заверши вход";
+            else if (connection?.status === "validating") actionLabel = "Проверяю сессию…";
+            else if (connection?.status === "importing") actionLabel = "Импортирую…";
+            else if (connection?.status === "rate_limited") actionLabel = "Автоповтор позже";
+            else if (connection?.status === "degraded") actionLabel = "Повторить синхронизацию";
+            else if (connection) actionLabel = "Повторить вход";
 
             return (
               <article className="source-card" key={source.code}>
@@ -188,21 +204,11 @@ export function ConnectionsPanel() {
                   </span>
                   <button
                     className="button button-secondary"
-                    disabled={active || busy || !source.connectionEnabled}
+                    disabled={active || launching || processing || !source.connectionEnabled}
                     onClick={() => void connect(source.code)}
                     type="button"
                   >
-                    {active
-                      ? "Подключено"
-                      : busy
-                        ? connection?.status === "awaiting_user"
-                          ? "Заверши вход"
-                          : "Запускаю…"
-                        : connection
-                          ? "Повторить вход"
-                          : source.connectionEnabled
-                            ? "Подключить"
-                            : "Скоро"}
+                    {actionLabel}
                   </button>
                 </div>
               </article>

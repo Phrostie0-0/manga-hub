@@ -44,7 +44,7 @@
 
 Публичный обезличенный ответ подтвердил поля `media.id`, `media.slug_url`, названия, `item_id`, `meta.item_number`, `items_count.uploaded`, status и pagination meta. `meta.item_number` хранится как исходная метка последней главы; он не превращается в выдуманный полный набор прочитанных глав. Пустые папки и папки других сайтов семейства Lib пропускаются.
 
-Вход остаётся интерактивным: worker открывает официальный `/auth/login`, перехватывает bearer только после успешного входа пользователя и сохраняет allowlisted browser state в зашифрованном виде. Логин и пароль MangaLib не сохраняются.
+Вход остаётся интерактивным: worker сначала открывает MangaLib и нажимает официальную кнопку входа, чтобы web-клиент создал OAuth state, PKCE challenge и callback для `client_id=1`. Затем пользователь входит на `auth.lib.social`; bearer перехватывается только после успешного возврата в MangaLib. Логин и пароль MangaLib не сохраняются.
 
 Проверялись [mangalib.me](https://mangalib.me/) и [mangalib.org](https://mangalib.org/). Домен .me указан в [карточке приложения Lib Dev](https://play.google.com/store/apps/details?hl=ru&id=ru.mangalib.lite). Файлы [robots .me](https://mangalib.me/robots.txt) и [robots .org](https://mangalib.org/robots.txt) указывают Host: https://mangalib.me и ограничивают читательские URL, главы, профили и ряд параметризованных страниц. Весь каталог не закрыт.
 
@@ -58,7 +58,7 @@
 
 ### Технический spike личной библиотеки
 
-Текущий адаптер проверяет bearer через `GET https://api.remanga.org/api/v2/users/current/` и читает шесть категорий личных закладок через `GET /api/v2/users/{userId}/bookmarks/`. Сохраняются стабильный ID, slug, названия, исходный статус, `read_progress`, `read_progress_total` и доступная последняя метка главы. Полный каталог и страницы глав не запрашиваются.
+Текущий адаптер проверяет bearer через `GET https://api.remanga.org/api/v2/users/current/`, получает персональные ID папок и их семантику через `GET /api/v2/users/{userId}/user_bookmarks/`, затем постранично читает единый список через `GET /api/v2/users/{userId}/bookmarks/`. Сохраняются стабильный ID, slug, актуальные поля `main_name`/`secondary_name`, исходный статус, `read_progress`, `read_progress_total` и доступная последняя метка главы. Полный каталог и страницы глав не запрашиваются.
 
 Worker получает bearer из запросов официальной страницы после того, как пользователь сам вошёл в открытом Chromium context. CAPTCHA и 2FA не обходятся. Реальная пользовательская сессия в spike не применялась; контракт покрыт обезличенными fixtures и должен быть подтверждён первым ручным подключением.
 
